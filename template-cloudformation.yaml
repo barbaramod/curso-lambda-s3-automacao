@@ -1,0 +1,120 @@
+```yaml
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Infraestrutura Serverless para processamento de Notas Fiscais com
+  S3, Lambda, DynamoDB e API Gateway.
+
+Resources:
+
+  NotasFiscaisBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: notas-fiscais-bucket
+
+  NotasFiscaisTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: NotasFiscais
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+
+  ProcessaNotasLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: processa-notas-lambda
+      Handler: grava_db.lambda_handler
+      Runtime: python3.9
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref NotasFiscaisBucket
+        S3Key: lambda/grava_db.zip
+      Timeout: 30
+
+  S3EventPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref ProcessaNotasLambda
+      Principal: s3.amazonaws.com
+      SourceArn: !GetAtt NotasFiscaisBucket.Arn
+
+  S3BucketNotification:
+    Type: AWS::S3::BucketNotification
+    Properties:
+      Bucket: !Ref NotasFiscaisBucket
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: "s3:ObjectCreated:*"
+            Function: !Ref ProcessaNotasLambda
+
+  ApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: notas-fiscais-api
+
+  ApiResourceNotas:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: "notas"
+      RestApiId: !Ref ApiGateway
+
+  ApiMethodPost:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref ApiResourceNotas
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: 
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProcessaNotasLambda.Arn}/invocations
+
+  ApiMethodGet:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref ApiResourceNotas
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: 
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProcessaNotasLambda.Arn}/invocations
+
+  LambdaApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref ProcessaNotasLambda
+      Principal: apigateway.amazonaws.com
+
+Outputs:
+  ApiUrl:
+    Description: URL base da API Gateway
+    Value: 
+      Fn::Sub: https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/notas
+```
